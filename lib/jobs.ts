@@ -115,15 +115,19 @@ print(len(entries), 'entries merged')"` ], "Sniff");
       "--spec", specPath, "--stage", genDir,
       ...(job.kind === "url" ? ["--har", `${dir}/har/merged.har`] : [])], "Audit");
 
-    // Pack: compile both binaries (gates were deferred, so no build/ exists),
+    // Pack: compile binaries for the requested target (linux = host build,
+    // mac = cross-compile darwin/arm64 — generated code is pure Go, modernc sqlite, no CGO),
     // then ship stage + docs as the artifact.
     mkdirSync("/mnt/usb/presswood-dev/artifacts", { recursive: true });
+    const isMac = job.target === "mac";
+    const goenv = isMac ? "GOOS=darwin GOARCH=arm64 CGO_ENABLED=0" : "";
+    const artifact = `/mnt/usb/presswood-dev/artifacts/${job.id}${isMac ? "-mac" : ""}.tgz`;
     await run(job, [
       "bash", "-c",
-      `cd ${genDir} && mkdir -p stage && go build -o stage ./cmd/... && files="stage SKILL.md README.md LICENSE"; for f in spec.yaml; do [ -f "$f" ] && files="$files $f"; done; tar -czf /mnt/usb/presswood-dev/artifacts/${job.id}.tgz $files && echo packed`,
+      `cd ${genDir} && mkdir -p stage && env ${goenv} go build -o stage ./cmd/... && files="stage SKILL.md README.md LICENSE"; for f in spec.yaml; do [ -f "$f" ] && files="$files $f"; done; tar -czf ${artifact} $files && echo packed`,
     ], "Pack");
     db.prepare("UPDATE presses SET status='done', phase='Done', artifact=?, expires_at=strftime('%s','now')*1000+30*24*3600*1000 WHERE id=?")
-      .run(`/mnt/usb/presswood-dev/artifacts/${job.id}.tgz`, job.id);
+      .run(artifact, job.id);
     void finished({ email: job.email, token: job.token, label: job.label || job.kind, ok: true }).catch(e => console.error("[email]", e));
   } catch (e) {
     // Surface the engine's own last words, not just our wrapper's exit note.

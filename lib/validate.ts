@@ -2,6 +2,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 export const KINDS = ["har", "spec", "url"] as const;
+export const TARGETS = ["linux", "mac"] as const;
 export const MAX_HAR = 50 * 1024 * 1024; // 50MB
 export const MAX_SPEC = 2 * 1024 * 1024; // 2MB
 
@@ -17,7 +18,7 @@ export function emailHash(email: string) {
 }
 
 export interface Validated {
-  ok: true; email: string; hash: string; kind: string;
+  ok: true; email: string; hash: string; kind: string; target: string;
   label: string; payloadPath?: string; payloadText?: string;
 }
 export interface Rejected { ok: false; reason: string; status: number }
@@ -48,6 +49,9 @@ export async function validateSubmission(req: Request): Promise<Validated | Reje
   const kind = String(t.get("kind") ?? "");
   if (!(KINDS as readonly string[]).includes(kind))
     return { ok: false, reason: "kind must be har|spec|url", status: 400 };
+  const target = String(t.get("target") ?? "linux");
+  if (!(TARGETS as readonly string[]).includes(target))
+    return { ok: false, reason: "target must be linux|mac", status: 400 };
 
   let payload = "", payloadPath: string | undefined;
   if (kind === "url") {
@@ -57,7 +61,7 @@ export async function validateSubmission(req: Request): Promise<Validated | Reje
     if (!/^https?:$/.test(parsed.protocol)) return { ok: false, reason: "only http(s) urls allowed", status: 400 };
     if (PRIVATE_HOST.test(parsed.hostname)) return { ok: false, reason: "private hosts not allowed", status: 400 };
     payload = u;
-    return { ok: true, email, hash: emailHash(email), kind, label: String(t.get("label") ?? "").slice(0, 80), payloadText: payload };
+    return { ok: true, email, hash: emailHash(email), kind, target, label: String(t.get("label") ?? "").slice(0, 80), payloadText: payload };
   }
   const file = t.get("file");
   if (!(file instanceof File)) return { ok: false, reason: "file required", status: 400 };
@@ -73,5 +77,5 @@ export async function validateSubmission(req: Request): Promise<Validated | Reje
   payload = payloadPath;
 
   const label = String(t.get("label") ?? "").slice(0, 80);
-  return { ok: true, email, hash: emailHash(email), kind, label, payloadPath, payloadText: payload };
+  return { ok: true, email, hash: emailHash(email), kind, target, label, payloadPath, payloadText: payload };
 }

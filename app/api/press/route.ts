@@ -20,9 +20,9 @@ export async function POST(req: Request) {
   if ((daily?.c ?? 0) >= DAILY_CAP) return NextResponse.json({ error: "daily limit reached (5) — back tomorrow" }, { status: 429 });
 
   const id = crypto.randomUUID(), token = randomBytes(16).toString("hex"), now = Date.now();
-  db.prepare(`INSERT INTO presses(id,token,email,kind,label,payload,status,phase,created_at,updated_at)
-              VALUES(?,?,?,?,?,?, 'queued','', ?, ?)`)
-    .run(id, token, v.email, v.kind, v.label, v.payloadPath ?? v.payloadText ?? "", now, now);
+  db.prepare(`INSERT INTO presses(id,token,email,kind,label,target,payload,status,phase,created_at,updated_at)
+              VALUES(?,?,?,?,?,?,?, 'queued','', ?, ?)`)
+    .run(id, token, v.email, v.kind, v.label, v.target, v.payloadPath ?? v.payloadText ?? "", now, now);
 
   startWorker();
   await started({ email: v.email, token, label: v.label || v.kind }).catch(e => console.error("[email]", e));

@@ -102,6 +102,7 @@ function Particles({ orderRef }: { orderRef: React.RefObject<HTMLDivElement | nu
 /* ---------------- submit form ---------------- */
 function PressForm() {
   const [kind, setKind] = useState<Kind>("url");
+  const [target, setTarget] = useState<"linux" | "mac">("linux");
   const [email, setEmail] = useState("");
   const [label, setLabel] = useState("");
   const [url, setUrl] = useState("");
@@ -112,7 +113,7 @@ function PressForm() {
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setMsg(null);
     const fd = new FormData();
-    fd.set("email", email); fd.set("kind", kind); fd.set("label", label);
+    fd.set("email", email); fd.set("kind", kind); fd.set("label", label); fd.set("target", target);
     fd.set("turnstile_token", "dev"); // ponytail: real widget when TURNSTILE_SITE key lands
     if (kind === "url") fd.set("url", url);
     if (file) fd.set("file", file);
@@ -159,6 +160,11 @@ function PressForm() {
       <div className="flex flex-col gap-3 sm:flex-row">
         <input required type="email" name="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@domain.dev"
           className="w-full rounded-lg border border-white/10 bg-black/40 px-4 py-3 text-sm placeholder:text-white/25" aria-label="email for delivery" />
+        <select value={target} onChange={e => setTarget(e.target.value as "linux" | "mac")} aria-label="build for"
+          className="shrink-0 rounded-lg border border-white/10 bg-black/40 px-3 py-3 text-sm">
+          <option value="linux">linux</option>
+          <option value="mac">mac</option>
+        </select>
         <button disabled={busy} className="shrink-0 rounded-lg bg-[#FFD700] px-7 py-3 text-sm font-bold uppercase tracking-wider text-black transition hover:bg-[#ffe14d] disabled:opacity-50">
           {busy ? "pressing…" : "Press it"}
         </button>
