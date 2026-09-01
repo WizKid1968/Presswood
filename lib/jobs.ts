@@ -96,9 +96,8 @@ print(len(entries), 'entries merged')"` ], "Sniff");
     // never help). If the site bounces anonymous GETs to a login, flip the spec
     // to cookie auth — the CLI then takes the user's Cookie header via env var.
     // Upgrade path: per-site probe results cached in targets/ if knocks add up.
-    if (job.kind === "har" && await loginWalled(specPath)) {
-      await flipToCookieAuth(specPath, job.id);
-    }
+    const probe = job.kind === "har" ? await probeLoginWall(specPath) : { walled: false, names: [] as string[] };
+    if (probe.walled) await flipToCookieAuth(specPath, job.id, probe.names);
     // One generate, gates deferred: upstream v4.31.1 emits _next*.go for Next.js
     // data-routes — underscore files the Go toolchain ignores → build fails.
     await run(job, engine(["generate", "--spec", specPath, "--name", workName, "--validate=false"]), "Compose");
@@ -180,34 +179,58 @@ const PW_CEIL_MS = Number(process.env.PW_CEIL_MIN ?? 30) * 60_000;
 
 // ponytail: anonymous probe of the spec's own base_url. 302/303 to a login URL
 // = this site needs a session; 200/3xx-to-content = public, leave auth alone.
-function loginWalled(specPath: string): Promise<boolean> {
+// Harvests Set-Cookie names from the bounce AND the login page itself — that's
+// where the server reveals its real session-cookie name (e.g. JSESSIONID),
+// which the generated CLI's `auth login --chrome` then keys on.
+function probeLoginWall(specPath: string): Promise<{ walled: boolean; names: string[] }> {
   return new Promise((resolve) => {
     const { readFileSync } = require("node:fs") as typeof import("node:fs");
     const m = readFileSync(specPath, "utf8").match(/^base_url:\s*(\S+)\s*$/m);
-    const target = (m?.[1] ?? "") + "/"; // hit root: cheapest, least likely to 404
     let u: URL;
-    try { u = new URL(target); } catch { return resolve(false); }
+    try { u = new URL((m?.[1] ?? "") + "/"); } catch { return resolve({ walled: false, names: [] }); }
+    const names = new Set<string>();
+    const finish = (walled: boolean) => resolve({ walled, names: [...names] });
     const mod = u.protocol === "https:" ? require("node:https") : require("node:http");
     const req = mod.get(u, { headers: { "user-agent": "Mozilla/5.0 (compatible; Presswood/1)" }, timeout: 15000 }, (res: import("node:http").IncomingMessage) => {
+      for (const h of res.headers["set-cookie"] ?? []) names.add(h.split("=")[0].trim());
       const loc = String(res.headers.location ?? "");
+      if (res.statusCode === 302 || res.statusCode === 303) {
+        if (!/login|signin|sign-in|auth|session/i.test(loc)) { res.resume(); return finish(false); }
+        res.resume();
+        let u2: URL;
+        try { u2 = new URL(loc, u); } catch { return finish(true); }
+        const mod2 = u2.protocol === "https:" ? require("node:https") : require("node:http");
+        const req2 = mod2.get(u2, { headers: { "user-agent": "Mozilla/5.0 (compatible; Presswood/1)" }, timeout: 15000 }, (res2: import("node:http").IncomingMessage) => {
+          for (const h of res2.headers["set-cookie"] ?? []) names.add(h.split("=")[0].trim());
+          res2.resume();
+          finish(true);
+        });
+        req2.on("timeout", () => { req2.destroy(); finish(true); });
+        req2.on("error", () => finish(true));
+        return;
+      }
       res.resume();
-      resolve(res.statusCode === 302 || res.statusCode === 303 ? /login|signin|sign-in|auth|session/i.test(loc) : false);
+      finish(false);
     });
-    req.on("timeout", () => { req.destroy(); resolve(false); });
-    req.on("error", () => resolve(false));
+    req.on("timeout", () => { req.destroy(); finish(false); });
+    req.on("error", () => finish(false));
   });
 }
 
 // ponytail: same edit I made by hand for carpart-pro (proven artifact), now automatic.
-function flipToCookieAuth(specPath: string, jobId: string) {
+// Cookie names come from the site's own Set-Cookie (probeLoginWall); `session` is
+// only a last-ditch fallback — the generated CLI requires ALL listed names before
+// it will auto-accept a Chrome profile, so a wrong name breaks `auth login --chrome`.
+function flipToCookieAuth(specPath: string, jobId: string, names: string[]) {
   const { readFileSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
   const yaml = readFileSync(specPath, "utf8");
   if (/^auth:\n[ \t]+type:\s*cookie/m.test(yaml)) return; // already auth'd
   const envName = (yaml.match(/^name:\s*(\S+)/m)?.[1] ?? "CLI").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") + "_COOKIES";
+  const cookieList = names.length ? names : ["session"];
   const flipped = yaml.replace(
     /^auth:\n((?:[ \t]+.*\n?)*)/m,
-    `auth:\n    type: cookie\n    header: Cookie\n    format: ""\n    env_vars:\n        - ${envName}\n    in: cookie\n    cookies:\n        - session\n`
+    `auth:\n    type: cookie\n    header: Cookie\n    format: ""\n    env_vars:\n        - ${envName}\n    in: cookie\n    cookies:\n${cookieList.map(n => `        - ${n}`).join("\n")}\n`
   );
   writeFileSync(specPath, flipped);
-  log(jobId, `[auth-fix] site requires login; spec flipped to cookie auth (env ${envName})\n`);
+  log(jobId, `[auth-fix] site requires login; spec flipped to cookie auth (env ${envName}, cookies: ${cookieList.join(", ")})\n`);
 }
