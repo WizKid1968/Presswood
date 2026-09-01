@@ -91,6 +91,14 @@ print(len(entries), 'entries merged')"` ], "Sniff");
     } else {
       specPath = job.payload;
     }
+    // ponytail: Chrome strips cookies from every HAR export, so logged-in HARs
+    // sniff as auth:none and the audit fails them live ("try a fuller HAR" can
+    // never help). If the site bounces anonymous GETs to a login, flip the spec
+    // to cookie auth — the CLI then takes the user's Cookie header via env var.
+    // Upgrade path: per-site probe results cached in targets/ if knocks add up.
+    if (job.kind === "har" && await loginWalled(specPath)) {
+      await flipToCookieAuth(specPath, job.id);
+    }
     // One generate, gates deferred: upstream v4.31.1 emits _next*.go for Next.js
     // data-routes — underscore files the Go toolchain ignores → build fails.
     await run(job, engine(["generate", "--spec", specPath, "--name", workName, "--validate=false"]), "Compose");
@@ -169,3 +177,37 @@ function run(job: PressRow, cmd: string[], phase: string): Promise<void> {
   });
 }
 const PW_CEIL_MS = Number(process.env.PW_CEIL_MIN ?? 30) * 60_000;
+
+// ponytail: anonymous probe of the spec's own base_url. 302/303 to a login URL
+// = this site needs a session; 200/3xx-to-content = public, leave auth alone.
+function loginWalled(specPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const { readFileSync } = require("node:fs") as typeof import("node:fs");
+    const m = readFileSync(specPath, "utf8").match(/^base_url:\s*(\S+)\s*$/m);
+    const target = (m?.[1] ?? "") + "/"; // hit root: cheapest, least likely to 404
+    let u: URL;
+    try { u = new URL(target); } catch { return resolve(false); }
+    const mod = u.protocol === "https:" ? require("node:https") : require("node:http");
+    const req = mod.get(u, { headers: { "user-agent": "Mozilla/5.0 (compatible; Presswood/1)" }, timeout: 15000 }, (res: import("node:http").IncomingMessage) => {
+      const loc = String(res.headers.location ?? "");
+      res.resume();
+      resolve(res.statusCode === 302 || res.statusCode === 303 ? /login|signin|sign-in|auth|session/i.test(loc) : false);
+    });
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.on("error", () => resolve(false));
+  });
+}
+
+// ponytail: same edit I made by hand for carpart-pro (proven artifact), now automatic.
+function flipToCookieAuth(specPath: string, jobId: string) {
+  const { readFileSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const yaml = readFileSync(specPath, "utf8");
+  if (/^auth:\n[ \t]+type:\s*cookie/m.test(yaml)) return; // already auth'd
+  const envName = (yaml.match(/^name:\s*(\S+)/m)?.[1] ?? "CLI").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") + "_COOKIES";
+  const flipped = yaml.replace(
+    /^auth:\n((?:[ \t]+.*\n?)*)/m,
+    `auth:\n    type: cookie\n    header: Cookie\n    format: ""\n    env_vars:\n        - ${envName}\n    in: cookie\n    cookies:\n        - session\n`
+  );
+  writeFileSync(specPath, flipped);
+  log(jobId, `[auth-fix] site requires login; spec flipped to cookie auth (env ${envName})\n`);
+}
