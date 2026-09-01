@@ -86,7 +86,13 @@ print(len(entries), 'entries merged')"` ], "Sniff");
         `python3 /mnt/usb/presswood-dev/crawler/generalize-tickers.py ${dir}/spec.yaml ${dir}/spec-gen.yaml 2>/dev/null; [ -f ${dir}/spec-gen.yaml ] || cp ${dir}/spec.yaml ${dir}/spec-gen.yaml; exit 0`], "Sniff");
       specPath = `${dir}/spec-gen.yaml`;
     } else if (job.kind === "har") {
-      await run(job, engine(["browser-sniff", "--har", job.payload, "--min-samples", "2", "--output", `${dir}/spec.yaml`, "--name", name]), "Sniff");
+      // ponytail: HARs recorded by humans collect third-party noise (analytics,
+      // ad/image hosts) — and any CAPTCHA challenge served by those hosts makes
+      // the engine's traffic analysis refuse the WHOLE press ("requires live
+      // browser execution"), even when the primary site threw no challenge.
+      // Filter to the dominant host's registrable domain before sniffing.
+      const harForSniff = await filterHarToPrimary(job.payload, `${dir}/filtered.har`, job.id) ?? job.payload;
+      await run(job, engine(["browser-sniff", "--har", harForSniff, "--min-samples", "2", "--output", `${dir}/spec.yaml`, "--name", name]), "Sniff");
       specPath = `${dir}/spec.yaml`;
     } else {
       specPath = job.payload;
@@ -176,6 +182,37 @@ function run(job: PressRow, cmd: string[], phase: string): Promise<void> {
   });
 }
 const PW_CEIL_MS = Number(process.env.PW_CEIL_MIN ?? 30) * 60_000;
+
+// ponytail: keep only entries from the dominant host's registrable domain
+// (dominant = most requests — for car-part HARs that's *.car-part.com). Drops
+// analytics/ad hosts whose Cloudflare challenges poison the engine's
+// reachability verdict. Falls back to the original HAR if filtering is a no-op
+// or would gut the capture. Callers must treat null as "use the original".
+function filterHarToPrimary(src: string, dst: string, jobId: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    try {
+      const { readFileSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+      const har = JSON.parse(readFileSync(src, "utf8"));
+      const es: { request: { url: string } }[] = har.log?.entries ?? [];
+      if (!es.length) return resolve(null);
+      const counts = new Map<string, number>();
+      for (const e of es) {
+        try { const h = new URL(e.request.url).hostname; counts.set(h, (counts.get(h) ?? 0) + 1); } catch { /* skip junk */ }
+      }
+      const primary = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      const reg = primary.split(".").slice(-2).join(".");
+      const keep = es.filter(e => {
+        try { const h = new URL(e.request.url).hostname; return h === primary || h === reg || h.endsWith("." + reg); }
+        catch { return false; }
+      });
+      if (keep.length < 10 || keep.length >= es.length) return resolve(null);
+      har.log.entries = keep;
+      writeFileSync(dst, JSON.stringify(har));
+      log(jobId, `[har-filter] primary host ${primary}: kept ${keep.length}/${es.length} entries, dropped ${es.length - keep.length} third-party/noise (incl. any CAPTCHAs served by other hosts)\n`);
+      resolve(dst);
+    } catch { resolve(null); }
+  });
+}
 
 // ponytail: anonymous probe of the spec's own base_url. 302/303 to a login URL
 // = this site needs a session; 200/3xx-to-content = public, leave auth alone.
