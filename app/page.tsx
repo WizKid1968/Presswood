@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/dist/ScrollTrigger";
 import Lenis from "lenis";
@@ -99,6 +99,53 @@ function Particles({ orderRef }: { orderRef: React.RefObject<HTMLDivElement | nu
   return <canvas ref={ref} className="absolute inset-0 h-full w-full" aria-hidden="true" />;
 }
 
+/* ---------------- Turnstile (activates when NEXT_PUBLIC_TURNSTILE_SITE is set at build) ---------------- */
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (el: HTMLElement, opts: Record<string, unknown>) => string;
+      reset: (id?: string) => void;
+      remove: (id: string) => void;
+    };
+    onTurnstileLoad?: () => void;
+  }
+}
+const TURNSTILE_SITE = process.env.NEXT_PUBLIC_TURNSTILE_SITE;
+
+function TurnstileBox({ onToken }: { onToken: (t: string | null) => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  const widgetId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!TURNSTILE_SITE || !box.current) return;
+    let dead = false;
+    const render = () => {
+      if (dead || widgetId.current || !box.current || !window.turnstile) return;
+      widgetId.current = window.turnstile.render(box.current, {
+        sitekey: TURNSTILE_SITE,
+        theme: "dark",
+        callback: (t: string) => onToken(t),
+        "expired-callback": () => onToken(null),
+        "error-callback": () => onToken(null),
+      });
+    };
+    if (window.turnstile) render();
+    else {
+      window.onTurnstileLoad = render;
+      const s = document.createElement("script");
+      s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad";
+      s.async = true;
+      document.head.appendChild(s);
+    }
+    return () => {
+      dead = true;
+      if (widgetId.current && window.turnstile) window.turnstile.remove(widgetId.current);
+      widgetId.current = null;
+    };
+  }, [onToken]);
+  if (!TURNSTILE_SITE) return null;
+  return <div ref={box} className="mb-3" aria-label="human check" />;
+}
+
 /* ---------------- submit form ---------------- */
 function PressForm() {
   const [kind, setKind] = useState<Kind>("url");
@@ -109,12 +156,16 @@ function PressForm() {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ e: boolean; t: string } | null>(null);
+  const [captcha, setCaptcha] = useState<string | null>(null);
+  const onToken = useCallback((t: string | null) => setCaptcha(t), []);
 
   async function submit(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setMsg(null);
+    e.preventDefault();
+    if (TURNSTILE_SITE && !captcha) { setMsg({ e: true, t: "complete the human check first" }); return; }
+    setBusy(true); setMsg(null);
     const fd = new FormData();
     fd.set("email", email); fd.set("kind", kind); fd.set("label", label); fd.set("target", target);
-    fd.set("turnstile_token", "dev"); // ponytail: real widget when TURNSTILE_SITE key lands
+    fd.set("turnstile_token", captcha ?? "dev"); // "dev" only while server runs TURNSTILE_SECRET=dev
     if (kind === "url") fd.set("url", url);
     if (file) fd.set("file", file);
     const r = await fetch("/api/press", { method: "POST", body: fd }).then(r => r.json()).catch(() => ({ error: "network" }));
@@ -156,6 +207,8 @@ function PressForm() {
           <span className="text-xs text-white/25">up to 2MB</span>
         </label>
       )}
+
+      <TurnstileBox onToken={onToken} />
 
       <div className="flex flex-col gap-3 sm:flex-row">
         <input required type="email" name="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@domain.dev"
