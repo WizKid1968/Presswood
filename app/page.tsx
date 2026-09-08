@@ -233,26 +233,29 @@ function PressForm() {
 }
 
 /* ---------------- shelf ---------------- */
+const SHELF_PAGE = 9;
 function Shelf() {
   const [rows, setRows] = useState<{ token: string; label: string; kind: string; status: string }[]>([]);
   const [total, setTotal] = useState(0);
-  const sentinel = useRef<HTMLDivElement>(null);
+  const [off, setOff] = useState(0);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
-    let off = 0, live = true;
-    const io = new IntersectionObserver(async ([e]) => {
-      if (!e.isIntersecting || !live) return;
-      const d = await fetch(`/api/presses?off=${off}`).then(r => r.json());
-      setTotal(d.total); setRows(p => [...p, ...d.rows]); off += 20;
-    }, { rootMargin: "200px" });
-    if (sentinel.current) io.observe(sentinel.current);
-    return () => { live = false; io.disconnect(); };
-  }, []);
+    let live = true;
+    setLoading(true);
+    fetch(`/api/presses?off=${off}&limit=${SHELF_PAGE}`).then(r => r.json()).then(d => {
+      if (!live) return;
+      setTotal(d.total); setRows(d.rows); setLoading(false);
+    }).catch(() => live && setLoading(false));
+    return () => { live = false; };
+  }, [off]);
+  const pages = Math.max(1, Math.ceil(total / SHELF_PAGE));
+  const page = Math.floor(off / SHELF_PAGE) + 1;
   return (
     <section id="shelf" data-alt="orbit" className="relative mx-auto max-w-6xl px-6 py-28">
       <p className="mono text-xs uppercase tracking-[0.3em] text-emerald-300/60">the shelf</p>
       <h2 className="rise mt-2 text-3xl sm:text-4xl">Everything already printed.</h2>
       <p className="mt-2 text-white/40">{total} presses and counting. Every card opens its live receipt.</p>
-      <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className={`mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 ${loading ? "opacity-40" : ""}`}>
         {rows.map((r, i) => (
           <a key={r.token + i} href={`/press/${r.token}`}
             className="mono group rounded-xl border border-white/8 bg-black/40 p-4 transition hover:border-emerald-400/30 hover:bg-black/60">
@@ -264,7 +267,17 @@ function Shelf() {
           </a>
         ))}
       </div>
-      <div ref={sentinel} className="pulse mono py-8 text-center text-xs text-white/30">{rows.length < total ? "loading more…" : "that's the whole shelf"}</div>
+      <div className="mono mt-8 flex items-center justify-center gap-4 text-xs text-white/40">
+        <button type="button" disabled={off === 0 || loading} onClick={() => setOff(Math.max(0, off - SHELF_PAGE))}
+          className="rounded-lg border border-white/10 px-4 py-2 uppercase tracking-wider transition hover:border-emerald-400/40 hover:text-white/70 disabled:opacity-25 disabled:hover:border-white/10 disabled:hover:text-white/40">
+          ← prev
+        </button>
+        <span>page {page} / {pages}</span>
+        <button type="button" disabled={off + SHELF_PAGE >= total || loading} onClick={() => setOff(off + SHELF_PAGE)}
+          className="rounded-lg border border-white/10 px-4 py-2 uppercase tracking-wider transition hover:border-emerald-400/40 hover:text-white/70 disabled:opacity-25 disabled:hover:border-white/10 disabled:hover:text-white/40">
+          next →
+        </button>
+      </div>
     </section>
   );
 }
