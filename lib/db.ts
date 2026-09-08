@@ -6,6 +6,7 @@ mkdirSync(DB_PATH.replace(/\/[^/]+$/, ""), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
 db.exec(`
+PRAGMA busy_timeout = 10000;
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS presses(
   id TEXT PRIMARY KEY,
