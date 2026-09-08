@@ -479,7 +479,7 @@ export default function Home() {
       <footer className="relative border-t border-white/5 px-6 pt-10 pb-24">
         <div className="mono mx-auto flex max-w-6xl flex-col gap-3 text-xs text-white/35 sm:flex-row sm:items-center sm:justify-between">
           <span>© 2026 presswood · alpha</span>
-          <span>engine: <a className="underline hover:text-white/60" href="https://github.com/mvanhorn/cli-printing-press">cli-printing-press</a></span>
+          <span>engine: cli-printing-press</span>
         </div>
       </footer>
     </main>
