@@ -110,6 +110,15 @@ print(len(entries), 'entries merged')"` ], "Sniff");
       // Filter to the dominant host's registrable domain before sniffing.
       const harForSniff = await filterHarToPrimary(job.payload, `${dir}/filtered.har`, job.id) ?? job.payload;
       await run(job, engine(["browser-sniff", "--har", harForSniff, "--min-samples", "2", "--output", `${dir}/spec.yaml`, "--name", name]), "Sniff");
+      // ponytail: HAR-sniffed specs get the same evidence polish as URL presses
+      // (Sep 9, owner-approved — sports-ref press died on a Cloudflare telemetry
+      // beacon that survived to live-fire). Sniffed specs only; hand specs bypass.
+      try {
+        const { polishSpecFile } = await import("./spec-polish");
+        await polishSpecFile(`${dir}/spec.yaml`, job.id, (line) => log(job.id, line + "\n"), `${dir}/spec-traffic-analysis.json`);
+      } catch (e: any) {
+        log(job.id, `[spec-polish] failed (press continues with unpolished spec): ${e?.message ?? e}\n`);
+      }
       specPath = `${dir}/spec.yaml`;
     } else {
       specPath = job.payload;
