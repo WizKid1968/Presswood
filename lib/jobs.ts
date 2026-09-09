@@ -200,23 +200,35 @@ function run(job: PressRow, cmd: string[], phase: string): Promise<void> {
 }
 const PW_CEIL_MS = Number(process.env.PW_CEIL_MIN ?? 30) * 60_000;
 
-// ponytail: keep only entries from the dominant host's registrable domain
-// (dominant = most requests — for car-part HARs that's *.car-part.com). Drops
-// analytics/ad hosts whose Cloudflare challenges poison the engine's
-// reachability verdict. Falls back to the original HAR if filtering is a no-op
-// or would gut the capture. Callers must treat null as "use the original".
+// ponytail: keep only entries from the primary host's registrable domain.
+// Sep 9 fix (owner-approved, sports-reference postmortem): primary = the host that
+// served the PAGES the user browsed (HTML documents), NOT the noisiest host. The old
+// "dominant = most requests" rule let cdn.ssref.net (131 image/js requests) outrank
+// www.sports-reference.com (47 requests but ALL 21 Stathead JSON API calls) and the
+// filter gutted a good logged-in capture. Rank: HTML docs first (analytics hosts and
+// CDNs never serve pages), JSON responses second (tie-break), raw requests last.
+// Falls back to the original HAR if filtering is a no-op or would gut the capture.
 function filterHarToPrimary(src: string, dst: string, jobId: string): Promise<string | null> {
   return new Promise((resolve) => {
     try {
       const { readFileSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
       const har = JSON.parse(readFileSync(src, "utf8"));
-      const es: { request: { url: string } }[] = har.log?.entries ?? [];
+      const es: { request: { url: string }; response?: { content?: { mimeType?: string } } }[] = har.log?.entries ?? [];
       if (!es.length) return resolve(null);
-      const counts = new Map<string, number>();
+      const stats = new Map<string, { html: number; json: number; req: number }>();
       for (const e of es) {
-        try { const h = new URL(e.request.url).hostname; counts.set(h, (counts.get(h) ?? 0) + 1); } catch { /* skip junk */ }
+        try {
+          const h = new URL(e.request.url).hostname;
+          const st = stats.get(h) ?? { html: 0, json: 0, req: 0 };
+          st.req++;
+          const mt = e.response?.content?.mimeType ?? "";
+          if (/^text\/html/i.test(mt)) st.html++;
+          else if (/json/i.test(mt)) st.json++;
+          stats.set(h, st);
+        } catch { /* skip junk */ }
       }
-      const primary = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      const primary = [...stats.entries()].sort((a, b) =>
+        (b[1].html - a[1].html) || (b[1].json - a[1].json) || (b[1].req - a[1].req))[0][0];
       const reg = primary.split(".").slice(-2).join(".");
       const keep = es.filter(e => {
         try { const h = new URL(e.request.url).hostname; return h === primary || h === reg || h.endsWith("." + reg); }
