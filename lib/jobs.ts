@@ -79,11 +79,28 @@ for f in sorted(__import__('os').listdir('.')):
         except Exception: pass
 json.dump({'log': {'version': '1.2', 'creator': {'name': 'presswood-merge', 'version': '1'}, 'entries': entries}}, open('merged.har', 'w'))
 print(len(entries), 'entries merged')"` ], "Sniff");
-      await run(job, engine(["browser-sniff", "--har", `${dir}/har/merged.har`, "--min-samples", "2",
+      // ponytail: URL presses get the same primary-host filter HAR presses get
+      // (Sep 9, owner-approved) — without it the sniffer crowns the analytics host
+      // (optable.co out-counted statmuse on JSON calls) and the spec wraps junk.
+      // Pre-sniff HAR stage: no stored analysis exists yet, so this filters HARs;
+      // post-sniff evidence work happens in spec-polish from the engine's store.
+      const harForSniff = await filterHarToPrimary(`${dir}/har/merged.har`, `${dir}/har/filtered.har`, job.id) ?? `${dir}/har/merged.har`;
+      await run(job, engine(["browser-sniff", "--har", harForSniff, "--min-samples", "2",
         "--output", `${dir}/spec.yaml`, "--name", name]), "Sniff");
       // generalize hardcoded ticker paths → {ticker} params (engine pre-step)
       await run(job, ["bash", "-c",
         `python3 /mnt/usb/presswood-dev/crawler/generalize-tickers.py ${dir}/spec.yaml ${dir}/spec-gen.yaml 2>/dev/null; [ -f ${dir}/spec-gen.yaml ] || cp ${dir}/spec.yaml ${dir}/spec-gen.yaml; exit 0`], "Sniff");
+      // ponytail: spec polish (Sep 9, owner-approved) — drop endpoints with no
+      // positive data evidence (2xx + JSON in the engine's traffic analysis),
+      // tag infra-shaped survivors into x-pp-latent, and flip cookie auth to
+      // none ONLY when no 401/403 exists anywhere AND every probeable kept
+      // endpoint passes anonymous. Sniffed specs only; hand specs untouched.
+      try {
+        const { polishSpecFile } = await import("./spec-polish");
+        await polishSpecFile(`${dir}/spec-gen.yaml`, job.id, (line) => log(job.id, line + "\n"), `${dir}/spec-traffic-analysis.json`);
+      } catch (e: any) {
+        log(job.id, `[spec-polish] failed (press continues with unpolished spec): ${e?.message ?? e}\n`);
+      }
       specPath = `${dir}/spec-gen.yaml`;
     } else if (job.kind === "har") {
       // ponytail: HARs recorded by humans collect third-party noise (analytics,
