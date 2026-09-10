@@ -49,6 +49,10 @@ async function workOne() {
     const workName = `${name}-${job.id.slice(0, 6)}`;
     const engine = (args: string[]) => [BIN, ...args];
     let specPath = "";
+    // Capture handed to the audit gate for traceability (both press kinds —
+    // Sep 9: HAR presses silently skipped traceability because only URL
+    // presses passed --har). Same filtered HAR the sniffer saw.
+    let harFile = "";
 
     if (job.kind === "url") {
       // ponytail: URL presses crawl via the multi-pass har-to-cli crawler.
@@ -85,6 +89,7 @@ print(len(entries), 'entries merged')"` ], "Sniff");
       // Pre-sniff HAR stage: no stored analysis exists yet, so this filters HARs;
       // post-sniff evidence work happens in spec-polish from the engine's store.
       const harForSniff = await filterHarToPrimary(`${dir}/har/merged.har`, `${dir}/har/filtered.har`, job.id) ?? `${dir}/har/merged.har`;
+      harFile = harForSniff;
       await run(job, engine(["browser-sniff", "--har", harForSniff, "--min-samples", "2",
         "--output", `${dir}/spec.yaml`, "--name", name]), "Sniff");
       // generalize hardcoded ticker paths → {ticker} params (engine pre-step)
@@ -109,6 +114,7 @@ print(len(entries), 'entries merged')"` ], "Sniff");
       // browser execution"), even when the primary site threw no challenge.
       // Filter to the dominant host's registrable domain before sniffing.
       const harForSniff = await filterHarToPrimary(job.payload, `${dir}/filtered.har`, job.id) ?? job.payload;
+      harFile = harForSniff;
       await run(job, engine(["browser-sniff", "--har", harForSniff, "--min-samples", "2", "--output", `${dir}/spec.yaml`, "--name", name]), "Sniff");
       // ponytail: HAR-sniffed specs get the same evidence polish as URL presses
       // (Sep 9, owner-approved — sports-ref press died on a Cloudflare telemetry
@@ -149,10 +155,16 @@ print(len(entries), 'entries merged')"` ], "Sniff");
     // builder-tests passed a phantom-endpoint CLI; this gate fails presses).
     // Traceability (phantom endpoints fail the press), auth sanity (no fake
     // analytics-cookie logins), branding (zero tolerance), live-fire (public
-    // specs must return real data from this box).
+    // specs must return a non-empty JSON payload), and a data smoke: the
+    // freshly built CLI's own `sync` must write at least 1 record or the press
+    // FAILS (Sep 9 lesson — every gate measured plumbing, none measured data).
+    // Stage binaries are built BEFORE the audit so the smoke test runs the
+    // real artifact; Pack then just tarballs what the audit already tested.
+    await run(job, ["bash", "-c",
+      `cd ${genDir} && mkdir -p stage && go build -o stage ./cmd/...`], "Stage build");
     await run(job, ["node", "/mnt/usb/presswood-dev/crawler/audit-press.js",
       "--spec", specPath, "--stage", genDir,
-      ...(job.kind === "url" ? ["--har", `${dir}/har/merged.har`] : [])], "Audit");
+      ...(harFile ? ["--har", harFile] : [])], "Audit");
 
     // Pack: compile binaries for the requested target (linux = host build,
     // mac = cross-compile darwin/arm64 — generated code is pure Go, modernc sqlite, no CGO),
@@ -222,27 +234,14 @@ function filterHarToPrimary(src: string, dst: string, jobId: string): Promise<st
     try {
       const { readFileSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
       const har = JSON.parse(readFileSync(src, "utf8"));
-      const es: { request: { url: string }; response?: { content?: { mimeType?: string } } }[] = har.log?.entries ?? [];
+      const es = har.log?.entries ?? [];
       if (!es.length) return resolve(null);
-      const stats = new Map<string, { html: number; json: number; req: number }>();
-      for (const e of es) {
-        try {
-          const h = new URL(e.request.url).hostname;
-          const st = stats.get(h) ?? { html: 0, json: 0, req: 0 };
-          st.req++;
-          const mt = e.response?.content?.mimeType ?? "";
-          if (/^text\/html/i.test(mt)) st.html++;
-          else if (/json/i.test(mt)) st.json++;
-          stats.set(h, st);
-        } catch { /* skip junk */ }
-      }
-      const primary = [...stats.entries()].sort((a, b) =>
-        (b[1].html - a[1].html) || (b[1].json - a[1].json) || (b[1].req - a[1].req))[0][0];
-      const reg = primary.split(".").slice(-2).join(".");
-      const keep = es.filter(e => {
-        try { const h = new URL(e.request.url).hostname; return h === primary || h === reg || h.endsWith("." + reg); }
-        catch { return false; }
-      });
+      const { pickPrimaryAndKeep } = require("./har-filter") as typeof import("./har-filter");
+      const pick = pickPrimaryAndKeep(es);
+      if (!pick) return resolve(null);
+      const { primary } = pick;
+      const reg = pick.reg;
+      const keep = pick.keep;
       if (keep.length < 10 || keep.length >= es.length) return resolve(null);
       har.log.entries = keep;
       writeFileSync(dst, JSON.stringify(har));
